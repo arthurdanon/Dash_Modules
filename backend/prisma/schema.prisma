@@ -1,0 +1,111 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Role {
+  id        String   @id @default(cuid())
+  name      String   @unique        
+  isAdmin   Boolean  @default(false)
+  isManager Boolean  @default(false)
+  users     User[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+
+enum TaskStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  DONE
+}
+
+model Site {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  managers  User[]   @relation("SiteManagers")
+  users     User[]   @relation("SiteUsers")
+  teams     Team[]
+  options   Option[]
+  tasks     Task[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Team {
+  id      String   @id @default(cuid())
+  site    Site     @relation(fields: [siteId], references: [id])
+  siteId  String
+  name    TeamName
+  members User[]
+}
+
+model User {
+  id            String   @id @default(cuid())
+  site          Site?    @relation("SiteUsers", fields: [siteId], references: [id])
+  siteId        String?
+  managedSite   Site?    @relation("SiteManagers", fields: [managedSiteId], references: [id])
+  managedSiteId String?
+
+  roleId        String
+  role          Role     @relation(fields: [roleId], references: [id])
+
+  teamId        String?
+  team          Team?    @relation(fields: [teamId], references: [id])
+  firstName     String
+  lastName      String
+  username      String   @unique
+  passwordHash  String
+  passwordEnc   Bytes?
+  passwordIv    Bytes?
+  passwordTag   Bytes?
+  mustChangePwd Boolean  @default(true)
+  isActive      Boolean  @default(true)
+  tokenVersion  Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  createdTasks  Task[]   @relation("TaskCreator")
+  assignedTasks Task[]   @relation("TaskAssignee")
+}
+
+
+model Option {
+  id        String   @id @default(cuid())
+  site      Site     @relation(fields: [siteId], references: [id])
+  siteId    String
+  key       String
+  label     String
+  type      String
+  config    Json
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Task {
+  id           String     @id @default(cuid())
+  site         Site       @relation(fields: [siteId], references: [id])
+  siteId       String
+  title        String
+  description  String?
+  status       TaskStatus @default(NOT_STARTED)
+
+  createdBy    User       @relation("TaskCreator", fields: [createdById], references: [id])
+  createdById  String
+
+  assignedTeam TeamName
+  assignedTo   User?      @relation("TaskAssignee", fields: [assignedToId], references: [id])
+  assignedToId String?
+
+  options         Json?
+  originRoleName  String   // ex: "MANAGER" ou "ROOM ATTENDANT"
+
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  finishedAt   DateTime?
+}
