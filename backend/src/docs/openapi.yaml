@@ -1,0 +1,451 @@
+openapi: 3.0.3
+info:
+  title: Dash API
+  version: 0.2.0
+  description: |
+    Documentation alignée avec le schéma Prisma actuel :
+    - Rôles figés (enum) : ADMIN, OWNER, MANAGER, USER
+    - Création d'utilisateurs avec rôle enum (pas de roleId)
+    - Un seul ADMIN max (règle applicative)
+servers:
+  - url: http://localhost:4000
+    description: Local dev
+
+tags:
+  - name: Auth
+  - name: Users
+  - name: Sites
+  - name: Roles
+  - name: Plans
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    RoleName:
+      type: string
+      enum: [ADMIN, OWNER, MANAGER, USER]
+
+    Site:
+      type: object
+      properties:
+        id: { type: string, description: cuid() }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    User:
+      type: object
+      properties:
+        id: { type: string, description: cuid() }
+        username: { type: string }
+        firstName: { type: string }
+        lastName: { type: string }
+        role: { $ref: '#/components/schemas/RoleName' }
+        siteId: { type: string, nullable: true }
+        teamId: { type: string, nullable: true }
+        mustChangePwd: { type: boolean }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Plan:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        price: { type: number, format: float }
+        currency: { type: string }
+
+    PasswordBlob:
+      type: object
+      description: Données chiffrées AES-256-GCM stockées côté serveur
+      properties:
+        iv: { type: string, description: Base64 IV }
+        tag: { type: string, description: Base64 auth tag }
+        enc: { type: string, description: Base64 ciphertext }
+
+    LoginResponse:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        user: { $ref: '#/components/schemas/User' }
+
+    CreateUserResponse:
+      type: object
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        generatedPassword: { type: string, description: 'Mot de passe généré côté serveur (à communiquer à l’utilisateur)' }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+  responses:
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      tags: [Auth]
+      responses:
+        '200': { description: OK }
+
+  # ---------- AUTH ----------
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and get access/refresh tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------- ROLES (READ-ONLY, ENUM) ----------
+  /api/roles:
+    get:
+      tags: [Roles]
+      summary: List fixed roles
+      description: Retourne la liste figée des rôles (enum). Aucun CRUD possible.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Role list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RoleName' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/roles/{name}:
+    get:
+      tags: [Roles]
+      summary: Get role by name (exists?)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema: { $ref: '#/components/schemas/RoleName' }
+      responses:
+        '200':
+          description: Found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { $ref: '#/components/schemas/RoleName' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------- USERS ----------
+  /api/users:
+    get:
+      tags: [Users]
+      summary: List users
+      description: |
+        - ADMIN: tous les utilisateurs
+        - MANAGER: uniquement son site (admins exclus)
+        - USER: 403
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/sites/{siteId}/users:
+    post:
+      tags: [Users]
+      summary: Create user in a site
+      description: |
+        - Mot de passe **généré** côté serveur (retourné dans `generatedPassword`)
+        - ADMIN: peut créer tous les rôles (mais un seul ADMIN au global)
+        - MANAGER: ne peut créer que sur **son** site et **jamais** d'ADMIN
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: siteId
+          required: true
+          schema: { type: string, description: cuid() }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [firstName, lastName, username]
+              properties:
+                firstName: { type: string }
+                lastName: { type: string }
+                username: { type: string }
+                role:
+                  $ref: '#/components/schemas/RoleName'
+                teamId:
+                  type: string
+                  nullable: true
+                  description: 'ID de Team si rattachement immédiat'
+            examples:
+              createUser:
+                summary: Création d’un MANAGER
+                value:
+                  firstName: "Jane"
+                  lastName: "Doe"
+                  username: "jane.doe"
+                  role: "MANAGER"
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateUserResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Username already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/users/{id}:
+    delete:
+      tags: [Users]
+      summary: Delete user
+      description: |
+        - ADMIN: peut supprimer n'importe qui **sauf le dernier ADMIN**
+        - MANAGER: peut supprimer sur son site, **jamais** d'ADMIN
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, description: cuid() }
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/users/{userId}/password:
+    get:
+      tags: [Users]
+      summary: Get stored plaintext password (from encrypted store)
+      description: |
+        Retourne le mot de passe **en clair** reconstruit à partir du stockage chiffré.
+        - ADMIN: ok
+        - MANAGER: ok pour son site, non-admin
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema: { type: string, description: cuid() }
+      responses:
+        '200':
+          description: Plain password for the user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  username: { type: string }
+                  password: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------- SITES ----------
+  /api/sites:
+    get:
+      tags: [Sites]
+      summary: List sites
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Site list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Site' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Sites]
+      summary: Create site
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Site' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/sites/{id}:
+    delete:
+      tags: [Sites]
+      summary: Delete site
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, description: cuid() }
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------- PLANS (ADMIN) ----------
+  /api/admin/plans:
+    get:
+      tags: [Plans]
+      summary: List plans (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Plan list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Plan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Plans]
+      summary: Create plan (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, price, currency]
+              properties:
+                name: { type: string }
+                price: { type: number, format: float }
+                currency: { type: string, example: EUR }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/admin/plans/{id}:
+    patch:
+      tags: [Plans]
+      summary: Update plan (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                price: { type: number, format: float }
+                currency: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Plans]
+      summary: Delete plan (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/owners/{ownerId}/subscription:
+    post:
+      tags: [Plans]
+      summary: Create subscription for owner (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: ownerId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                planId: { type: string }
+      responses:
+        '201': { description: Created }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
