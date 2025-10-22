@@ -1,7 +1,7 @@
 // src/api.js
 import axios from 'axios';
 
-const RAW = (import.meta.env.VITE_API_BASE || '/api').trim();
+const RAW = (import.meta.env.REACT_APP_API_BASE || '/api').trim();
 const BASE = RAW.replace(/\/+$/, ''); // enlève le trailing slash
 
 export const api = axios.create({
