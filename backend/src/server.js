@@ -6,12 +6,21 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 
+// ##########################CONST ROUTES####################################################
+// ---------- ROUTES AUTH----------
 const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/users');
-const siteRoutes = require('./routes/sites');
-const roleRoutes = require('./routes/roles');
-const planRoutes = require('./routes/plans');
-const teamsRoutes = require('./routes/teams');
+// ---------- ROUTES ADMIN----------
+const AdminSiteRoutes = require('./routes/AdminRoutes/AdminSites');
+const AdminUserRoutes = require('./routes/AdminRoutes/AdminUsers');
+const AdminteamsRoutes = require('./routes/AdminRoutes/AdminTeams');
+// ---------- ROUTES PUBLIC----------
+const siteRoutes = require('./routes/GeneralRoutes/GeneralSites');
+const roleRoutes = require('./routes/GeneralRoutes/GeneralRoles'); //mise a jour 
+const teamsRoutes = require('./routes/GeneralRoutes/GeneralTeams');
+// ---------- ROUTES SETTINGS----------
+const settingsRoutes = require('./routes/SettingsRoutes/settings');
+// ##########################CONST ROUTES####################################################
+
 
 const app = express();
 
@@ -76,13 +85,21 @@ app.use('/api/auth', rateLimit({
   legacyHeaders: false,
 }));
 
-// ---------- ROUTES ----------
+// ##########################APP ROUTES####################################################
+// ---------- ROUTES AUTH----------
 app.use('/api/auth', authRoutes);
-app.use('/api', userRoutes);
+// ---------- ROUTES ADMIN----------
+app.use('/api/admin', AdminSiteRoutes);
+app.use('/api/admin', AdminUserRoutes);
+app.use('/api/admin', AdminteamsRoutes);
+// ---------- ROUTES PUBLIC----------
 app.use('/api', siteRoutes);
 app.use('/api', roleRoutes);
-app.use('/api', planRoutes);
 app.use('/api', teamsRoutes);
+// ---------- ROUTES SETTINGS----------
+app.use('/api/settings', settingsRoutes);
+// ##########################APP ROUTES####################################################
+
 
 // ---------- 404 JSON ----------
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not Found' }));

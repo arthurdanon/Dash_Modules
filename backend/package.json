@@ -3,17 +3,23 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "type": "commonjs",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon -r dotenv/config src/server.js dotenv_config_path=./.env",
+    "format": "prisma format",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:reset": "prisma migrate reset --force",
+    "seed": "prisma db seed",
+    "reset-admin": "node scripts/reset-admin.js"
+  },
+  "prisma": {
     "seed": "node scripts/seed.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "@prisma/client": "^6.13.0",
     "bcrypt": "^6.0.0",
@@ -24,6 +30,7 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "nanoid": "^5.1.5",
+    "nodemailer": "^7.0.9",
     "prisma": "^6.13.0",
     "swagger-ui-express": "^5.0.1",
     "yamljs": "^0.3.0",

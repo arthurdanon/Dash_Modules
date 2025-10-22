@@ -1,124 +1,90 @@
-// src/mw/auth.js
+// backend/src/mw/auth.js
 const { PrismaClient } = require('@prisma/client');
 const { verifyAccess } = require('../lib/auth');
 
 const prisma = new PrismaClient();
 
-/**
- * requireAuth
- * - Lit le Bearer token
- * - Vérifie la signature
- * - Recharge l'utilisateur (role enum + siteId) pour s'assurer qu'il est actif
- * - Expose req.me avec des flags pratiques
- */
 async function requireAuth(req, res, next) {
-  const hdr = req.headers.authorization;
-  if (!hdr || !hdr.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'No token' });
-  }
-
+  const hdr = req.headers.authorization || req.headers.Authorization;
+  if (!hdr || !hdr.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
   try {
-    const token = hdr.split(' ')[1];
-    // Idéalement ton token contient déjà { sub, role, siteId }
-    const payload = verifyAccess(token); // { sub, role?, siteId? }
+    const payload = verifyAccess(hdr.slice(7).trim()); // { sub, username, role?, siteId?, ver/tv }
     if (!payload?.sub) return res.status(401).json({ error: 'Invalid token' });
 
-    // Recharge l'utilisateur pour vérifier isActive et récupérer role/siteId au cas où
-    const meDb = await prisma.user.findUnique({
+    const meDb = await prisma.coreUser.findUnique({
       where: { id: String(payload.sub) },
       select: {
-        id: true,
-        isActive: true,
-        role: true,     // enum string: "ADMIN" | "OWNER" | "MANAGER" | "USER"
-        siteId: true,   // string | null
+        id: true, username: true, isActive: true, tokenVersion: true,
+        primarySiteId: true,
+        role: { select: { name: true, isAdmin: true, isOwner: true, isManager: true } },
+        memberships: { select: { siteId: true } },
       },
     });
+    if (!meDb || !meDb.isActive) return res.status(401).json({ error: 'Invalid user' });
 
-    if (!meDb || !meDb.isActive) {
-      return res.status(401).json({ error: 'Invalid user' });
-    }
+    const tokenVer = (payload.ver ?? payload.tv ?? 0) | 0;
+    if (tokenVer !== (meDb.tokenVersion ?? 0)) return res.status(401).json({ error: 'Invalid token' });
 
-    // Construit l'objet req.me uniforme
-    const role = meDb.role || payload.role || 'USER';
-    req.user = payload; // si tu en as besoin ailleurs
+    const siteIds = meDb.memberships.map(m => m.siteId);
+    const roleName = meDb.role?.name || 'USER';
+
+    req.user = payload;
     req.me = {
       id: meDb.id,
-      role,                         // string
-      siteId: meDb.siteId || payload.siteId || null,
-      isAdmin: role === 'ADMIN',
-      isManager: role === 'MANAGER',
+      username: meDb.username,
+      role: roleName,
+      isAdmin: !!meDb.role?.isAdmin,
+      isOwner: !!meDb.role?.isOwner,
+      isManager: !!meDb.role?.isManager,
+      primarySiteId: meDb.primarySiteId || null,
+      siteIds, // multi-sites accessibles
+      tokenVersion: meDb.tokenVersion,
     };
 
-    return next();
-  } catch (e) {
-    return res.status(401).json({ error: 'Invalid token' });
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid token' });
   }
 }
 
-/**
- * requireRoleName('ADMIN', 'MANAGER', ...)
- * - Autorise si le rôle de l'utilisateur est dans la liste
- */
 function requireRoleName(...names) {
-  const allowed = names.map(String).map((n) => n.toUpperCase());
+  const allowed = names.map(n => String(n).toUpperCase());
   return (req, res, next) => {
-    const me = req.me;
-    if (!me) return res.status(401).json({ error: 'No user' });
-    if (!allowed.includes(String(me.role).toUpperCase())) {
+    if (!req.me) return res.status(401).json({ error: 'No user' });
+    if (!allowed.includes(String(req.me.role).toUpperCase())) {
       return res.status(403).json({ error: 'Forbidden' });
     }
     next();
   };
 }
 
-/**
- * requireAdmin
- */
 function requireAdmin(req, res, next) {
-  if (req?.me?.role !== 'ADMIN') {
-    return res.status(403).json({ error: 'Admin only' });
-  }
+  if (!req.me?.isAdmin) return res.status(403).json({ error: 'Admin only' });
   next();
 }
 
-/**
- * requireManager
- * - Autorise MANAGER et ADMIN
- */
+/** OWNER/MANAGER/ADMIN */
 function requireManager(req, res, next) {
-  const role = req?.me?.role;
-  if (!(role === 'MANAGER' || role === 'ADMIN')) {
-    return res.status(403).json({ error: 'Manager/Admin only' });
-  }
-  next();
+  if (req.me?.isAdmin || req.me?.isOwner || req.me?.isManager) return next();
+  return res.status(403).json({ error: 'Manager/Owner/Admin only' });
 }
 
-/**
- * scopedToSite
- * - Si pas ADMIN, exige que l'action cible le même site que celui de l'utilisateur
- * - Vérifie siteId dans params/body/query (string)
- */
+/** Si pas ADMIN, exige membership au site ciblé */
 function scopedToSite(req, res, next) {
   const me = req.me;
   if (!me) return res.status(401).json({ error: 'No user' });
-
-  // Admin : pas de restriction de site
-  if (me.role === 'ADMIN') return next();
+  // avant: if (me.isAdmin) return next();
+  if (me.isAdmin || me.isOwner) return next(); // ✅ owner passe aussi
 
   const target =
-    (req.params && req.params.siteId) ||
-    (req.body && req.body.siteId) ||
-    (req.query && req.query.siteId) ||
-    null;
+    req.params?.siteId || req.body?.siteId || req.query?.siteId || me.primarySiteId || null;
 
-  const targetId = target ? String(target) : null;
-  const mySiteId = me.siteId ? String(me.siteId) : null;
-
-  if (!targetId || !mySiteId || targetId !== mySiteId) {
+  if (!target) return res.status(400).json({ error: 'Missing siteId' });
+  if (!me.siteIds.includes(String(target))) {
     return res.status(403).json({ error: 'Wrong site scope' });
   }
-
   next();
 }
+
 
 module.exports = { requireAuth, requireRoleName, requireAdmin, requireManager, scopedToSite };

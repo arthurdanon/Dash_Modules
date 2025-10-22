@@ -4,7 +4,6 @@ import { useAuth } from '../AuthContext';
 import { useEffect, useState } from 'react';
 import {
   FiList, FiUsers, FiMapPin, FiLogOut, FiLogIn, FiSun, FiMoon,
-  FiBriefcase, FiSettings
 } from 'react-icons/fi';
 
 /* ------ Modale de confirmation -------- */
@@ -89,16 +88,23 @@ export default function Nav() {
           {/* Liens */}
           <div className="flex items-center gap-3">
             <Link
-              to="/tasks"
+              to="/"
               className="flex items-center gap-2 text-sm md:text-base text-zinc-700 hover:text-black dark:text-zinc-300 dark:hover:text-white"
             >
               <FiList className="text-lg" />
-              <span className="hidden md:inline">Tasks</span>
+              <span className="hidden md:inline">Home</span>
+            </Link>
+            <Link
+              to="/AdminDashboard"
+              className="flex items-center gap-2 text-sm md:text-base text-zinc-700 hover:text-black dark:text-zinc-300 dark:hover:text-white"
+            >
+              <FiList className="text-lg" />
+              <span className="hidden md:inline">Dashboard</span>
             </Link>
 
             {(isAdmin || isOwner || isManager) && (
               <Link
-                to="/users"
+                to="/AdminUsers"
                 className="flex items-center gap-2 text-sm md:text-base text-zinc-700 hover:text-black dark:text-zinc-300 dark:hover:text-white"
               >
                 <FiUsers className="text-lg" />
@@ -109,32 +115,12 @@ export default function Nav() {
             {/* Sites pour Admin & Owner (on garde la règle d’origine) */}
             {(isAdmin || isOwner) && (
               <Link
-                to="/sites"
+                to="/AdminSites"
                 className="flex items-center gap-2 text-sm md:text-base text-zinc-700 hover:text-black dark:text-zinc-300 dark:hover:text-white"
               >
                 <FiMapPin className="text-lg" />
                 <span className="hidden md:inline">Sites</span>
               </Link>
-            )}
-
-            {/* Onglets "admin" — désormais visibles pour ADMIN, OWNER et MANAGER */}
-            {(isAdmin || isOwner || isManager) && (
-              <>
-                <Link
-                  to="/admin/owners"
-                  className="flex items-center gap-2 text-sm md:text-base text-zinc-700 hover:text-black dark:text-zinc-300 dark:hover:text-white"
-                >
-                  <FiBriefcase className="text-lg" />
-                  <span className="hidden md:inline">Owners</span>
-                </Link>
-                <Link
-                  to="/admin/plans"
-                  className="flex items-center gap-2 text-sm md:text-base text-zinc-700 hover:text-black dark:text-zinc-300 dark:hover:text-white"
-                >
-                  <FiSettings className="text-lg" />
-                  <span className="hidden md:inline">Plans</span>
-                </Link>
-              </>
             )}
           </div>
 

@@ -9,150 +9,183 @@ generator client {
 }
 
 /**
- * Rôles figés
+ * ===================== Core tables =====================
  */
-enum RoleName {
-  ADMIN
-  OWNER
-  MANAGER
-  USER
-}
 
-enum TeamName {
-  HOUSEKEEPING
-  MAINTENANCE
-  FRONT_DESK
-  SECURITY
-  OTHER
-}
-
-enum TaskStatus {
-  NOT_STARTED
-  IN_PROGRESS
-  DONE
-}
-
-model Site {
-  id   String @id @default(cuid())
-  name String @unique
-
-  managers User[] @relation("SiteManagers")
-  users    User[] @relation("SiteUsers")
-
-  teams   Team[]
-  options Option[]
-  tasks   Task[]
+/**
+ * Rôles fixes en table (Admin, Owner, Manager, User)
+ */
+model CoreRole {
+  id        String     @id @default(cuid())
+  name      String     @unique // 'ADMIN' | 'OWNER' | 'MANAGER' | 'USER'
+  isAdmin   Boolean    @default(false)
+  isOwner   Boolean    @default(false)
+  isManager Boolean    @default(false)
+  users     CoreUser[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("coreroles")
 }
 
 /**
- * Une équipe appartient à un site,
- * peut avoir un manager (User via relation "TeamManager"),
- * et des membres (via User.teamId).
+ * Paramétrage global (quotas + catalogue de modules activables)
  */
-model Team {
-  id     String @id @default(cuid())
-  site   Site   @relation(fields: [siteId], references: [id])
-  siteId String
+model CoreSetting {
+  id               String @id @default(cuid())
+  name             String @unique // COMPANY_NAME
+  // Quotas globaux (null = illimité)
+  maxSites         Int?
+  maxOwners        Int?
+  maxManagers      Int?
+  maxUsers         Int?
+  // Catalogue des modules activables (ex: { stock: true })
+  availableModules Json?
 
-  name TeamName
-
-  // Manager d'équipe (optionnel)
-  managerId String?
-  manager   User?   @relation("TeamManager", fields: [managerId], references: [id])
-
-  // Membres (1 équipe max par user via User.teamId)
-  members User[]
+  sites CoreSite[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("coresettings")
 }
 
-model User {
-  id String @id @default(cuid())
+/**
+ * Site (appartient au CoreSetting) + modules activés localement
+ */
+model CoreSite {
+  id   String @id @default(cuid())
+  name String @unique
 
-  // Appartenance à un site
-  site   Site?   @relation("SiteUsers", fields: [siteId], references: [id])
-  siteId String?
+  setting   CoreSetting @relation(fields: [settingId], references: [id])
+  settingId String
 
-  // Gestion d'un site (si applicable)
-  managedSite   Site?   @relation("SiteManagers", fields: [managedSiteId], references: [id])
-  managedSiteId String?
+  // Propriétaire (owner) optionnel du site
+  ownerId String?
+  owner   CoreUser? @relation("SiteOwner", fields: [ownerId], references: [id])
 
-  // Rôle figé
-  role RoleName @default(USER)
+  // Modules activés pour CE site (ex: { stock: true })
+  modules Json?
 
-  // Appartenance à une équipe (0..1)
+  // Back-relations
+  members      CoreSiteMember[]
+  teams        CoreTeam[]
+  primaryUsers CoreUser[]       @relation("PrimarySite") // back-rel du site principal des users
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("coresites")
+}
+
+/**
+ * Utilisateur core (rôle global + 0..N sites via membership + 0..1 team)
+ */
+model CoreUser {
+  id       String @id @default(cuid())
+  username String @unique
+
+  email String? @unique
+  firstName String
+  lastName  String
+
+  roleId String
+  role   CoreRole @relation(fields: [roleId], references: [id])
+
+  primarySiteId String?
+  primarySite   CoreSite? @relation("PrimarySite", fields: [primarySiteId], references: [id])
+
+  ownedSites CoreSite[] @relation("SiteOwner")
+
   teamId String?
-  team   Team?   @relation(fields: [teamId], references: [id])
+  team   CoreTeam? @relation(fields: [teamId], references: [id])
 
-  // ⬇️ Back-relation pour le manager d'équipe (ferme "TeamManager")
-  managedTeams Team[] @relation("TeamManager")
+  managedTeams CoreTeam[] @relation("TeamManager")
 
-  // Identité & sécu
-  firstName    String
-  lastName     String
-  username     String @unique
-  passwordHash String
-
-  // Stockage chiffré optionnel du mot de passe "en clair" (AES-GCM)
-  passwordEnc Bytes?
-  passwordIv  Bytes?
-  passwordTag Bytes?
+  // 👇 change en nullable pour permettre l’invitation sans mot de passe
+  passwordHash String?
 
   mustChangePwd Boolean @default(true)
   isActive      Boolean @default(true)
   tokenVersion  Int     @default(0)
 
-  // Tâches créées / assignées
-  createdTasks  Task[] @relation("TaskCreator")
-  assignedTasks Task[] @relation("TaskAssignee")
+  memberships CoreSiteMember[]
+
+  // 👇 back-rel vers les tokens d’auth
+  authTokens CoreAuthToken[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("coreusers")
 }
 
-model Option {
-  id     String @id @default(cuid())
-  site   Site   @relation(fields: [siteId], references: [id])
+// 👇 Types de token pour invitation / reset
+enum CoreAuthTokenType {
+  INVITE
+  RESET
+}
+
+// 👇 Table de tokens (single-use, expirables)
+model CoreAuthToken {
+  id        String            @id @default(cuid())
+  type      CoreAuthTokenType
+  userId    String
+  user      CoreUser          @relation(fields: [userId], references: [id])
+  tokenHash String            @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  meta      Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, type])
+  @@map("coreauthtokens")
+}
+
+/**
+ * Membership user↔site (accès) + flag manager au niveau du site
+ */
+model CoreSiteMember {
+  id String @id @default(cuid())
+
   siteId String
+  site   CoreSite @relation(fields: [siteId], references: [id])
 
-  key    String
-  label  String
-  type   String
-  config Json
+  userId String
+  user   CoreUser @relation(fields: [userId], references: [id])
 
-  active    Boolean  @default(true)
+  // Si ce user est “manager du site”
+  isManager Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([siteId, userId])
+  @@map("coresitemembers")
 }
 
-model Task {
-  id     String @id @default(cuid())
-  site   Site   @relation(fields: [siteId], references: [id])
+/**
+ * Équipe appartenant à un site
+ * - managerId optionnel (le “manager officiel” de l’équipe)
+ * - membres = users avec user.teamId = cette équipe
+ */
+model CoreTeam {
+  id     String   @id @default(cuid())
   siteId String
+  site   CoreSite @relation(fields: [siteId], references: [id])
 
-  title       String
-  description String?
-  status      TaskStatus @default(NOT_STARTED)
+  name String
 
-  // Auteur
-  createdBy   User   @relation("TaskCreator", fields: [createdById], references: [id])
-  createdById String
+  managerId String?
+  manager   CoreUser? @relation("TeamManager", fields: [managerId], references: [id])
 
-  // Affectation
-  assignedTeam TeamName
-  assignedTo   User?    @relation("TaskAssignee", fields: [assignedToId], references: [id])
-  assignedToId String?
+  members CoreUser[]
 
-  options Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  // Rôle d'origine typé (au lieu d'un String libre)
-  originRole RoleName?
-
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  finishedAt DateTime?
+  @@unique([siteId, name])
+  @@map("coreteams")
 }

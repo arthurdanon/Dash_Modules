@@ -1,76 +1,98 @@
 // scripts/seed.js
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
-
-const { PrismaClient, RoleName } = require('@prisma/client');
+const { PrismaClient } = require('@prisma/client');
 const { hash } = require('../src/lib/auth');
-const { encryptPassword } = require('../src/lib/crypto');
 
 const prisma = new PrismaClient();
 
 (async () => {
   try {
-    // --- ENV & helpers ---
-    const COMPANY_NAME = process.env.COMPANY_NAME || 'TaskFlow';
-    const ADMIN_USERNAME = process.env.USERNAME_ADMIN || 'admin_global';
-    const ADMIN_PASSWORD = process.env.USERNAME_PASSWORD || 'admin123';
+    const company  = process.env.COMPANY_NAME     || 'TaskFlow';
+    const username = process.env.USERNAME_ADMIN   || 'admin_global';
+    const password = process.env.USERNAME_PASSWORD|| 'admin123';
+    const email    = process.env.ADMIN_EMAIL      || `${username}@example.com`; //admin_global@example.com
 
-    if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
-      throw new Error('USERNAME_ADMIN et USERNAME_PASSWORD doivent être définis dans .env');
+    // 1) Rôles (fixes)
+    const roles = [
+      { name: 'ADMIN',   isAdmin: true,  isOwner: false, isManager: false },
+      { name: 'OWNER',   isAdmin: false, isOwner: true,  isManager: false },
+      { name: 'MANAGER', isAdmin: false, isOwner: false, isManager: true  },
+      { name: 'USER',    isAdmin: false, isOwner: false, isManager: false },
+    ];
+    for (const r of roles) {
+      await prisma.coreRole.upsert({
+        where: { name: r.name },
+        update: r,
+        create: r,
+      });
     }
+    const adminRole = await prisma.coreRole.findUnique({ where: { name: 'ADMIN' } });
 
-    // --- Site par défaut ---
-    const site = await prisma.site.upsert({
-      where: { name: COMPANY_NAME },
+    // 2) CoreSetting (limites + modules — utilise les defaults si présents)
+    const setting = await prisma.coreSetting.upsert({
+      where: { name: company },
       update: {},
-      create: { name: COMPANY_NAME },
+      create: {
+        name: company,
+        // optionnel: ne définir que ce que ton schema accepte (sinon laisser les defaults)
+        availableModules: { stock: true },
+      },
     });
 
-    // --- Vérifie l’état des ADMINs ---
-    const adminCount = await prisma.user.count({ where: { role: RoleName.ADMIN } });
+    // 3) Site par défaut (lié au setting)
+    const site = await prisma.coreSite.upsert({
+      where: { name: company },
+      update: { settingId: setting.id },
+      create: { name: company, settingId: setting.id },
+    });
 
-    // (A) Si aucun ADMIN -> créer un ADMIN bootstrap
-    if (adminCount === 0) {
-      const { enc, iv, tag } = encryptPassword(ADMIN_PASSWORD);
-      const passwordHash = await hash(ADMIN_PASSWORD);
+    // 4) Admin user (hash only, pas de passwordEnc/*)
+    const passwordHash = await hash(password);
+    const existing = await prisma.coreUser.findUnique({ where: { username } });
 
-      await prisma.user.create({
+    if (!existing) {
+      const created = await prisma.coreUser.create({
         data: {
-          username: ADMIN_USERNAME,
+          username,
+          email,
           firstName: 'Admin',
           lastName: 'Global',
-          role: RoleName.ADMIN,
+          roleId: adminRole.id,
           passwordHash,
-          passwordEnc: enc,
-          passwordIv: iv,
-          passwordTag: tag,
           mustChangePwd: false,
-          siteId: site.id,
+          isActive: true,
+          primarySiteId: site.id,
+          // l’admin est aussi membre du site par défaut (manager=true par commodité)
+          memberships: {
+            create: { siteId: site.id, isManager: true },
+          },
         },
       });
-
-      console.log(`Seed: ADMIN '${ADMIN_USERNAME}' créé pour le site '${site.name}'.`);
-      console.log(`        Login: ${ADMIN_USERNAME} / ${ADMIN_PASSWORD}`);
-      return;
-    }
-
-    // (B) Si un ADMIN existe déjà :
-    //     - si l'utilisateur ADMIN_USERNAME existe mais n'est pas ADMIN -> promotion en ADMIN
-    //     - sinon, ne rien faire (on respecte "un seul ADMIN" côté API/usage)
-    const existing = await prisma.user.findUnique({ where: { username: ADMIN_USERNAME } });
-
-    if (existing && existing.role !== RoleName.ADMIN) {
-      await prisma.user.update({
-        where: { id: existing.id },
-        data: { role: RoleName.ADMIN },
-      });
-      console.log(`Seed: utilisateur '${ADMIN_USERNAME}' promu en ADMIN (un ADMIN existait déjà).`);
+      console.log(`Seed ➜ admin créé: ${created.username} / ${password}`);
     } else {
-      console.log('Seed: ADMIN déjà présent, aucune création supplémentaire.');
+      await prisma.coreUser.update({
+        where: { id: existing.id },
+        data: {
+          roleId: adminRole.id,
+          isActive: true,
+          passwordHash,
+          mustChangePwd: false,
+          primarySiteId: site.id,
+          tokenVersion: { increment: 1 },
+        },
+      });
+      // s’assurer de la membership au site
+      await prisma.coreSiteMember.upsert({
+        where: { siteId_userId: { siteId: site.id, userId: existing.id } },
+        update: { isManager: true },
+        create: { siteId: site.id, userId: existing.id, isManager: true },
+      });
+      console.log(`Seed ➜ admin réinitialisé: ${existing.username} / ${password}`);
     }
 
-    console.log(`Site par défaut: ${site.name}`);
+    console.log(`Seed terminé. Site="${site.name}" Setting="${setting.name}"`);
   } catch (e) {
-    console.error('Seed error:', e);
+    console.error('seed error:', e);
     process.exit(1);
   } finally {
     await prisma.$disconnect();
