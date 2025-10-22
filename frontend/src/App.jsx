@@ -1,6 +1,6 @@
 // src/App.jsx
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import Nav from './components/Nav';
+import Nav from './Components/Nav';
 import ProtectedRoute from './Components/ProtectedRoute';
 
 import AuthLogin from './PageAuth/AuthLogin';
