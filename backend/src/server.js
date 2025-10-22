@@ -8,7 +8,7 @@ const cors = require('cors');
 
 // ##########################CONST ROUTES####################################################
 // ---------- ROUTES AUTH----------
-const authRoutes = require('./routes/auth');
+const authRoutes = require('./routes/AuthRoutes');
 // ---------- ROUTES ADMIN----------
 const AdminSiteRoutes = require('./routes/AdminRoutes/AdminSites');
 const AdminUserRoutes = require('./routes/AdminRoutes/AdminUsers');
