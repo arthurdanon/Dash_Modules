@@ -8,7 +8,7 @@ const { validate } = require('../../mw/validate');
 const prisma = new PrismaClient();
 const r = Router();
 
-// Toutes ces routes sont Admin-only
+// Admin-only
 r.use(requireAuth, requireAdmin);
 
 /** GET /api/settings/settings-list */
@@ -25,9 +25,9 @@ r.get('/settings-list', async (_req, res) => {
   res.json(s);
 });
 
-/** PATCH /api/settings/settings/:id */
+/** PATCH /api/settings/settings-update/:id */
 r.patch(
-  '/settings/:id',
+  '/settings-update/:id',
   validate({
     params: z.object({ id: z.string().min(1) }),
     body: z.object({
@@ -42,6 +42,7 @@ r.patch(
   async (req, res) => {
     const { id } = req.params;
     const { name, maxSites, maxOwners, maxManagers, maxUsers, availableModules } = req.body || {};
+
     const data = {};
     if (typeof name === 'string' && name.trim()) data.name = name.trim();
     if (maxSites !== undefined)    data.maxSites = maxSites;
@@ -50,14 +51,23 @@ r.patch(
     if (maxUsers !== undefined)    data.maxUsers = maxUsers;
     if (availableModules !== undefined) data.availableModules = availableModules;
 
-    const s = await prisma.coreSetting.update({ where: { id }, data });
+    const s = await prisma.coreSetting.update({
+      where: { id },
+      data,
+      select: {
+        id: true, name: true,
+        maxSites: true, maxOwners: true, maxManagers: true, maxUsers: true,
+        availableModules: true,
+        updatedAt: true,
+      },
+    });
     res.json(s);
   }
 );
 
-/** PATCH /api/settings/settings-sites/:siteId/modules */
+/** PATCH /api/settings/settings/sites/:siteId/modules */
 r.patch(
-  '/settings-sites/:siteId/modules',
+  '/settings/sites/:siteId/modules',
   validate({
     params: z.object({ siteId: z.string().min(1) }),
     body: z.object({ modules: z.record(z.boolean()) }),
