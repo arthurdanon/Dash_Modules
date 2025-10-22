@@ -1,11 +1,25 @@
 // src/api.js
 import axios from 'axios';
 
-const RAW = (import.meta.env.REACT_APP_API_BASE || '/api').trim();
-const BASE = RAW.replace(/\/+$/, ''); // enlève le trailing slash
+function getApiBase() {
+  // CRA remplace process.env.REACT_APP_API_BASE au build.
+  // Si ce n'est pas le cas (ou variable absente), on fallback proprement.
+  let val;
+  try {
+    // eslint-disable-next-line no-undef
+    if (typeof process !== 'undefined' && process.env) {
+      // eslint-disable-next-line no-undef
+      val = process.env.REACT_APP_API_BASE;
+    }
+  } catch {
+    // ignore
+  }
+  if (!val || typeof val !== 'string') val = '/api'; // défaut: /api
+  return val.trim().replace(/\/+$/, ''); // sans trailing slash
+}
 
 export const api = axios.create({
-  baseURL: BASE,
+  baseURL: getApiBase(),
   withCredentials: false,
 });
 
