@@ -1,78 +1,57 @@
 // backend/src/routes/AdminRoutes/AdminTeams.js
 const { Router } = require('express');
 const { PrismaClient } = require('@prisma/client');
+const { z } = require('zod');
 const { requireAuth, scopedToSite } = require('../../mw/auth');
+const { validate } = require('../../mw/validate');
 
 const prisma = new PrismaClient();
 const r = Router();
 
-/* Utils rôles */
-function isAdmin(me) { return !!me?.isAdmin || String(me?.role).toUpperCase() === 'ADMIN'; }
-function isOwner(me) { return !!me?.isOwner || String(me?.role).toUpperCase() === 'OWNER'; }
-function ensureAdminOrOwner(me) {
-  if (isAdmin(me) || isOwner(me)) return;
-  const err = new Error('Forbidden'); err.status = 403; throw err;
-}
+const isAdmin = (me) => !!me?.isAdmin || String(me?.role).toUpperCase() === 'ADMIN';
+const isOwner = (me) => !!me?.isOwner || String(me?.role).toUpperCase() === 'OWNER';
 
-/**
- * GET /api/admin/sites/:siteId/teams
- * - ADMIN & OWNER seulement (lecture côté admin)
- * - scopedToSite : ADMIN bypass / OWNER doit appartenir au site
- */
-r.get('/sites/:siteId/teams', requireAuth, scopedToSite, async (req, res, next) => {
-  try {
-    ensureAdminOrOwner(req.me);
-    const siteId = String(req.params.siteId);
+/** POST /api/admin/sites/:siteId/teams  (ADMIN & OWNER) */
+r.post(
+  '/sites/:siteId/teams',
+  requireAuth,
+  scopedToSite,
+  validate({
+    params: z.object({ siteId: z.string().min(1) }),
+    body: z.object({ name: z.string().trim().min(1, 'Nom requis') }),
+  }),
+  async (req, res) => {
+    const me = req.me;
+    if (!(isAdmin(me) || isOwner(me))) return res.status(403).json({ error: 'Forbidden' });
 
-    const teams = await prisma.coreTeam.findMany({
-      where: { siteId },
-      orderBy: { name: 'asc' },
-      select: {
-        id: true,
-        name: true,
-        siteId: true,
-        manager: { select: { id: true, username: true } },
-        _count: { select: { members: true } },
-      },
-    });
-    res.json(teams);
-  } catch (e) { next(e); }
-});
-
-/**
- * POST /api/admin/sites/:siteId/teams
- * - ADMIN & OWNER
- * - scopedToSite : OWNER doit être membre du site (ADMIN bypass)
- */
-r.post('/sites/:siteId/teams', requireAuth, scopedToSite, async (req, res, next) => {
-  try {
-    ensureAdminOrOwner(req.me);
-    const siteId = String(req.params.siteId);
-    const { name } = req.body || {};
-    if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+    const { siteId } = req.params;
+    const { name } = req.body;
 
     const created = await prisma.coreTeam.create({
-      data: { name: name.trim(), siteId },
+      data: { name: name.trim(), siteId: String(siteId) },
       select: { id: true, name: true, siteId: true },
     });
     res.status(201).json(created);
-  } catch (e) {
-    if (e?.code === 'P2002') return res.status(409).json({ error: 'Team name already exists' });
-    next(e);
   }
-});
+);
 
-/**
- * PATCH /api/admin/teams/:id
- * - ADMIN & OWNER
- * - OWNER doit appartenir au site de l’équipe
- */
-r.patch('/teams/:id', requireAuth, async (req, res, next) => {
-  try {
-    ensureAdminOrOwner(req.me);
+/** PATCH /api/admin/teams/:id  (rename / set manager) — ADMIN & OWNER */
+r.patch(
+  '/teams/:id',
+  requireAuth,
+  validate({
+    params: z.object({ id: z.string().min(1) }),
+    body: z.object({
+      name: z.string().trim().min(1).optional(),
+      managerId: z.string().nullable().optional(),
+    }),
+  }),
+  async (req, res) => {
+    const me = req.me;
+    if (!(isAdmin(me) || isOwner(me))) return res.status(403).json({ error: 'Forbidden' });
 
     const id = String(req.params.id);
-    const { name, managerId } = req.body || {};
+    const { name, managerId } = req.body;
 
     const team = await prisma.coreTeam.findUnique({
       where: { id },
@@ -80,9 +59,9 @@ r.patch('/teams/:id', requireAuth, async (req, res, next) => {
     });
     if (!team) return res.status(404).json({ error: 'Not found' });
 
-    if (!isAdmin(req.me)) {
-      const siteIds = new Set(req.me.siteIds || []);
-      if (!siteIds.has(team.siteId)) return res.status(403).json({ error: 'Wrong site scope' });
+    // OWNER doit être membre du site de l’équipe
+    if (!isAdmin(me) && !(req.me.siteIds || []).includes(team.siteId)) {
+      return res.status(403).json({ error: 'Wrong site scope' });
     }
 
     const data = {};
@@ -101,7 +80,7 @@ r.patch('/teams/:id', requireAuth, async (req, res, next) => {
           },
         });
         if (!u) return res.status(400).json({ error: 'Invalid managerId' });
-        const sameSite = (u.memberships || []).some(m => m.siteId === team.siteId);
+        const sameSite = u.memberships.some(m => m.siteId === team.siteId);
         if (!sameSite) return res.status(400).json({ error: 'Manager not in the same site' });
         if (!['MANAGER', 'OWNER', 'ADMIN'].includes(u.role?.name)) {
           return res.status(400).json({ error: 'User is not a manager/owner/admin' });
@@ -110,24 +89,19 @@ r.patch('/teams/:id', requireAuth, async (req, res, next) => {
       }
     }
 
-    const updated = await prisma.coreTeam.update({
-      where: { id },
-      data,
-      select: { id: true, name: true, siteId: true, managerId: true },
-    });
+    const updated = await prisma.coreTeam.update({ where: { id }, data });
     res.json(updated);
-  } catch (e) { next(e); }
-});
+  }
+);
 
-/**
- * DELETE /api/admin/teams/:id
- * - ADMIN & OWNER
- * - OWNER doit appartenir au site de l’équipe
- * - Refuse si l’équipe a des membres
- */
-r.delete('/teams/:id', requireAuth, async (req, res, next) => {
-  try {
-    ensureAdminOrOwner(req.me);
+/** DELETE /api/admin/teams/:id — ADMIN & OWNER; refuse si membres */
+r.delete(
+  '/teams/:id',
+  requireAuth,
+  validate({ params: z.object({ id: z.string().min(1) }) }),
+  async (req, res) => {
+    const me = req.me;
+    if (!(isAdmin(me) || isOwner(me))) return res.status(403).json({ error: 'Forbidden' });
 
     const id = String(req.params.id);
     const team = await prisma.coreTeam.findUnique({
@@ -136,18 +110,16 @@ r.delete('/teams/:id', requireAuth, async (req, res, next) => {
     });
     if (!team) return res.status(404).json({ error: 'Not found' });
 
-    if (!isAdmin(req.me)) {
-      const siteIds = new Set(req.me.siteIds || []);
-      if (!siteIds.has(team.siteId)) return res.status(403).json({ error: 'Wrong site scope' });
+    if (!isAdmin(me) && !(req.me.siteIds || []).includes(team.siteId)) {
+      return res.status(403).json({ error: 'Wrong site scope' });
     }
-
     if (team._count.members > 0) {
       return res.status(409).json({ error: 'Team has members' });
     }
 
     await prisma.coreTeam.delete({ where: { id } });
     res.status(204).send();
-  } catch (e) { next(e); }
-});
+  }
+);
 
 module.exports = r;

@@ -1,38 +1,30 @@
+// backend/src/routes/GeneralRoutes/GeneralSites.js
 const { Router } = require('express');
 const { PrismaClient } = require('@prisma/client');
+const { z } = require('zod');
 const { requireAuth } = require('../../mw/auth');
+const { validate } = require('../../mw/validate');
 
 const prisma = new PrismaClient();
 const r = Router();
 
-// Helpers
-const hasRole = (me, role) => String(me?.role || '').toUpperCase() === role;
-const isAdmin = (me) => !!me?.isAdmin || hasRole(me, 'ADMIN');
-const isOwner = (me) => !!me?.isOwner || hasRole(me, 'OWNER');
-const isAdminOrOwner = (me) => isAdmin(me) || isOwner(me);
-
-async function isMemberOfSite(userId, siteId) {
-  const m = await prisma.coreSiteMember.findFirst({
-    where: { userId: String(userId), siteId: String(siteId) },
-    select: { id: true },
-  });
-  return !!m;
-}
+const userIsAdmin = (me) => !!me?.isAdmin || String(me?.role).toUpperCase() === 'ADMIN';
 
 /**
  * GET /api/sites
- * - Admin/Owner : tous les sites
+ * - Admin : tous les sites
  * - Sinon : sites dont je suis membre
- * + managersCount (MANAGER uniquement), usersCount (USER)
+ * + managersCount (MANAGER uniquement), usersCount (USER uniquement)
  */
 r.get('/sites', requireAuth, async (req, res, next) => {
   try {
     const me = req.me;
-    const where = isAdminOrOwner(me) ? {} : { members: { some: { userId: me.id } } };
+    const where = userIsAdmin(me) ? {} : { members: { some: { userId: me.id } } };
 
     const sites = await prisma.coreSite.findMany({
       where,
       orderBy: { createdAt: 'desc' },
+      select: { id: true, name: true },
     });
 
     const enriched = await Promise.all(
@@ -57,59 +49,36 @@ r.get('/sites', requireAuth, async (req, res, next) => {
     );
 
     res.json(enriched);
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 /**
  * GET /api/sites/:siteId
- * - Admin/Owner : OK
+ * - Admin : OK
  * - Sinon : doit être membre du site
  */
-r.get('/sites/:siteId', requireAuth, async (req, res, next) => {
-  try {
-    const me = req.me;
-    const siteId = String(req.params.siteId);
+r.get(
+  '/sites/:siteId',
+  requireAuth,
+  validate({ params: z.object({ siteId: z.string().min(1) }) }),
+  async (req, res, next) => {
+    try {
+      const me = req.me;
+      const siteId = String(req.params.siteId);
 
-    if (!isAdminOrOwner(me)) {
-      const member = await isMemberOfSite(me.id, siteId);
-      if (!member) return res.status(403).json({ error: 'Forbidden' });
-    }
+      if (!userIsAdmin(me)) {
+        const member = await prisma.coreSiteMember.findFirst({
+          where: { userId: me.id, siteId },
+          select: { id: true },
+        });
+        if (!member) return res.status(403).json({ error: 'Forbidden' });
+      }
 
-    const s = await prisma.coreSite.findUnique({ where: { id: siteId } });
-    if (!s) return res.status(404).json({ error: 'Not found' });
-    res.json(s);
-  } catch (e) {
-    next(e);
+      const s = await prisma.coreSite.findUnique({ where: { id: siteId } });
+      if (!s) return res.status(404).json({ error: 'Not found' });
+      res.json(s);
+    } catch (e) { next(e); }
   }
-});
-
-/**
- * GET /api/sites/:siteId/teams
- * - Admin/Owner : OK
- * - Sinon : membre du site
- */
-r.get('/sites/:siteId/teams', requireAuth, async (req, res, next) => {
-  try {
-    const me = req.me;
-    const siteId = String(req.params.siteId);
-
-    if (!isAdminOrOwner(me)) {
-      const member = await isMemberOfSite(me.id, siteId);
-      if (!member) return res.status(403).json({ error: 'Forbidden' });
-    }
-
-    const teams = await prisma.coreTeam.findMany({
-      where: { siteId },
-      orderBy: { name: 'asc' },
-      include: { manager: { select: { id: true, firstName: true, lastName: true } } },
-    });
-
-    res.json(teams);
-  } catch (e) {
-    next(e);
-  }
-});
+);
 
 module.exports = r;

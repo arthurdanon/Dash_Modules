@@ -1,3 +1,4 @@
+// backend/src/routes/GeneralRoutes/GeneralRoles.js
 const { Router } = require('express');
 const { PrismaClient } = require('@prisma/client');
 const { requireAuth } = require('../../mw/auth');
@@ -5,12 +6,17 @@ const { requireAuth } = require('../../mw/auth');
 const prisma = new PrismaClient();
 const r = Router();
 
-r.get('/roles', requireAuth, async (_req, res) => {
-  const roles = await prisma.coreRole.findMany({
-    orderBy: { name: 'asc' },
-    select: { id: true, name: true, isAdmin: true, isOwner: true, isManager: true },
-  });
-  res.json(roles.map(r => r.name)); // ou renvoie l’objet complet si tu préfères
+/** GET /api/roles — lecture simple des rôles supportés */
+r.get('/roles', requireAuth, async (_req, res, next) => {
+  try {
+    const roles = await prisma.coreRole.findMany({
+      orderBy: { name: 'asc' },
+      select: { name: true },
+    });
+    // fallback si la table est vide
+    const arr = roles?.length ? roles.map(r => r.name) : ['ADMIN', 'OWNER', 'MANAGER', 'USER'];
+    res.json(arr);
+  } catch (e) { next(e); }
 });
 
 module.exports = r;
