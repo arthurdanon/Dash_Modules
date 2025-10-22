@@ -1,6 +1,7 @@
 // src/PageSetting/Settings.jsx
 import { useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router-dom';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import ProtectedRoute from '../Components/ProtectedRoute';
 import { useAuth } from '../AuthContext';
 import { api } from '../api';
@@ -18,7 +19,7 @@ function NumberField({ label, value, onChange, placeholder = 'illimité' }) {
           const raw = e.target.value;
           if (raw === '') return onChange(null);
           const n = Number(raw);
-          if (Number.isNaN(n) || n < 0) return; // ignore entrée invalide
+          if (Number.isNaN(n) || n < 0) return;
           onChange(n);
         }}
         min={0}
@@ -45,13 +46,24 @@ function ModuleToggle({ label, checked, onChange }) {
 function GeneralSettingsInner() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'ADMIN' || user?.isAdmin;
+  const qc = useQueryClient();
 
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const [info, setInfo] = useState('');
 
-  // État éditable (copie locale)
+  // ---- Query: load settings list ----
+  const { data: settingsList, isLoading, refetch } = useQuery({
+    queryKey: ['settings-list'],
+    queryFn: async () => {
+      const { data } = await api.get('/settings/settings-list');
+      return Array.isArray(data) ? data : [];
+    },
+  });
+
+  // on part du principe qu’il y a un seul "setting" (tenant unique)
+  const current = settingsList?.[0] || null;
+
+  // Copie locale éditable
   const [form, setForm] = useState({
     id: '',
     name: '',
@@ -59,122 +71,118 @@ function GeneralSettingsInner() {
     maxOwners: null,
     maxManagers: null,
     maxUsers: null,
-    availableModules: {}, // { stock: true, ... }
-    sites: [],            // [{id,name,modules}]
+    availableModules: {},
+    sites: [],
   });
 
-  // === Load
-  const load = async () => {
-    setLoading(true);
+  // Set form when data changes
+  useEffect(() => {
     setErr('');
     setInfo('');
-    try {
-      // Base path serveur: app.use('/api/settings', settingsRoutes)
-      const { data } = await api.get('/settings/settings-list'); // GET /api/settings/settings-list
-      const arr = Array.isArray(data) ? data : [];
-      const s = arr[0];
-      if (s) {
-        setForm({
-          id: s.id,
-          name: s.name || '',
-          maxSites: s.maxSites ?? null,
-          maxOwners: s.maxOwners ?? null,
-          maxManagers: s.maxManagers ?? null,
-          maxUsers: s.maxUsers ?? null,
-          availableModules: s.availableModules || {},
-          sites: s.sites || [],
-        });
-      } else {
-        setForm({
-          id: '',
-          name: '',
-          maxSites: null, maxOwners: null, maxManagers: null, maxUsers: null,
-          availableModules: {},
-          sites: [],
-        });
-      }
-    } catch (e) {
-      setErr(e?.response?.data?.error || 'Erreur chargement des paramètres');
-    } finally {
-      setLoading(false);
+    if (!current) {
+      setForm({
+        id: '',
+        name: '',
+        maxSites: null,
+        maxOwners: null,
+        maxManagers: null,
+        maxUsers: null,
+        availableModules: {},
+        sites: [],
+      });
+      return;
     }
-  };
+    setForm({
+      id: current.id,
+      name: current.name || '',
+      maxSites: current.maxSites ?? null,
+      maxOwners: current.maxOwners ?? null,
+      maxManagers: current.maxManagers ?? null,
+      maxUsers: current.maxUsers ?? null,
+      availableModules: current.availableModules || {},
+      sites: current.sites || [],
+    });
+  }, [current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { load(); }, []);
-
-  // Liste de modules connus (dynamiques) = clés de availableModules
+  // Clés de modules triées
   const moduleKeys = useMemo(() => {
     const keys = Object.keys(form.availableModules || {});
     keys.sort();
     return keys;
   }, [form.availableModules]);
 
-  // Ajout d’un module au catalogue “activable”
+  // Ajout d’une clé module
   const [newModule, setNewModule] = useState('');
   const addModuleKey = () => {
     const key = newModule.trim();
     if (!key) return;
-    setForm(f => ({
+    setForm((f) => ({
       ...f,
       availableModules: { ...(f.availableModules || {}), [key]: true },
     }));
     setNewModule('');
   };
 
-  // === Save settings (quotas + catalogue)
-  const saveSettings = async () => {
-    if (!form.id) {
-      setErr("Aucun paramètre n'a été initialisé côté serveur.");
-      return;
-    }
-    setSaving(true);
-    setErr('');
-    setInfo('');
-    try {
-      const payload = {
-        name: form.name?.trim() || undefined,
-        maxSites: form.maxSites,
-        maxOwners: form.maxOwners,
-        maxManagers: form.maxManagers,
-        maxUsers: form.maxUsers,
-        availableModules: form.availableModules || {},
-      };
-      await api.patch(`/settings/settings/${form.id}`, payload); // PATCH /api/settings/settings/:id
+  // ---- Mutations ----
+  const saveMutation = useMutation({
+    mutationFn: async (payload) => {
+      if (!form.id) throw new Error('Aucun paramètre initialisé');
+      const { data } = await api.patch(`/settings/settings-update/${form.id}`, payload);
+      return data;
+    },
+    onSuccess: () => {
       setInfo('Paramètres sauvegardés.');
-      await load();
-    } catch (e) {
-      setErr(e?.response?.data?.error || 'Erreur sauvegarde des paramètres');
-    } finally {
-      setSaving(false);
-    }
+      setErr('');
+      qc.invalidateQueries({ queryKey: ['settings-list'] });
+    },
+    onError: (e) => {
+      setInfo('');
+      setErr(e?.response?.data?.error || e?.message || 'Erreur sauvegarde des paramètres');
+    },
+  });
+
+  const toggleModuleMutation = useMutation({
+    mutationFn: async ({ siteId, nextModules }) => {
+      const { data } = await api.patch(`/settings/settings/sites/${siteId}/modules`, {
+        modules: nextModules,
+      });
+      return data;
+    },
+    onSuccess: (site) => {
+      setInfo('Module du site mis à jour.');
+      setErr('');
+      // reflète localement
+      setForm((f) => ({
+        ...f,
+        sites: (f.sites || []).map((s) => (s.id === site.id ? { ...s, modules: site.modules || {} } : s)),
+      }));
+    },
+    onError: (e) => {
+      setInfo('');
+      setErr(e?.response?.data?.error || e?.message || 'Mise à jour module site impossible');
+    },
+  });
+
+  const saveSettings = () => {
+    const payload = {
+      name: form.name?.trim() || undefined,
+      maxSites: form.maxSites,
+      maxOwners: form.maxOwners,
+      maxManagers: form.maxManagers,
+      maxUsers: form.maxUsers,
+      availableModules: form.availableModules || {},
+    };
+    saveMutation.mutate(payload);
   };
 
-  // Toggle module sur un SITE (PATCH immédiat)
-  const toggleSiteModule = async (siteId, key, on) => {
-    try {
-      const current = (form.sites || []).find(s => s.id === siteId);
-      const nextModules = { ...(current?.modules || {}) };
-      nextModules[key] = !!on;
-
-      const { data } = await api.patch(
-        `/settings/settings-sites/${siteId}/modules`,
-        { modules: nextModules }
-      ); // PATCH /api/settings/settings-sites/:siteId/modules
-
-      const returnedModules = (data && data.modules) ? data.modules : nextModules;
-
-      setForm(f => ({
-        ...f,
-        sites: (f.sites || []).map(s => s.id === siteId ? { ...s, modules: returnedModules } : s),
-      }));
-      setInfo('Module du site mis à jour.');
-    } catch (e) {
-      setErr(e?.response?.data?.error || 'Mise à jour module site impossible');
-    }
+  const toggleSiteModule = (siteId, key, on) => {
+    const currentSite = (form.sites || []).find((s) => s.id === siteId);
+    const nextModules = { ...(currentSite?.modules || {}) };
+    nextModules[key] = !!on;
+    toggleModuleMutation.mutate({ siteId, nextModules });
   };
 
   if (!isAdmin) {
-    // Double protection (les routes API sont déjà protégées côté serveur)
     return <Navigate to="/home" replace />;
   }
 
@@ -183,11 +191,11 @@ function GeneralSettingsInner() {
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-semibold tracking-tight">Paramètres (Admin)</h2>
         <div className="flex gap-2">
-          <button className="btn-outline" onClick={load} disabled={loading}>
-            {loading ? 'Chargement…' : 'Rafraîchir'}
+          <button className="btn-outline" onClick={() => refetch()} disabled={isLoading}>
+            {isLoading ? 'Chargement…' : 'Rafraîchir'}
           </button>
-          <button className="btn" onClick={saveSettings} disabled={saving || loading || !form.id}>
-            {saving ? 'Sauvegarde…' : 'Sauvegarder'}
+          <button className="btn" onClick={saveSettings} disabled={saveMutation.isPending || isLoading || !form.id}>
+            {saveMutation.isPending ? 'Sauvegarde…' : 'Sauvegarder'}
           </button>
         </div>
       </div>
@@ -211,23 +219,21 @@ function GeneralSettingsInner() {
             <input
               className="input"
               value={form.name}
-              onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               placeholder="Nom de l’organisation"
             />
           </label>
 
-          <NumberField label="Max Sites"    value={form.maxSites}    onChange={(v) => setForm(f => ({ ...f, maxSites: v }))} />
-          <NumberField label="Max Owners"   value={form.maxOwners}   onChange={(v) => setForm(f => ({ ...f, maxOwners: v }))} />
-          <NumberField label="Max Managers" value={form.maxManagers} onChange={(v) => setForm(f => ({ ...f, maxManagers: v }))} />
-          <NumberField label="Max Users"    value={form.maxUsers}    onChange={(v) => setForm(f => ({ ...f, maxUsers: v }))} />
+          <NumberField label="Max Sites" value={form.maxSites} onChange={(v) => setForm((f) => ({ ...f, maxSites: v }))} />
+          <NumberField label="Max Owners" value={form.maxOwners} onChange={(v) => setForm((f) => ({ ...f, maxOwners: v }))} />
+          <NumberField label="Max Managers" value={form.maxManagers} onChange={(v) => setForm((f) => ({ ...f, maxManagers: v }))} />
+          <NumberField label="Max Users" value={form.maxUsers} onChange={(v) => setForm((f) => ({ ...f, maxUsers: v }))} />
         </div>
 
         <div className="mt-2">
           <div className="font-medium mb-2">Catalogue des modules activables</div>
 
-          {moduleKeys.length === 0 && (
-            <div className="text-sm text-zinc-500 mb-2">Aucun module déclaré.</div>
-          )}
+          {moduleKeys.length === 0 && <div className="text-sm text-zinc-500 mb-2">Aucun module déclaré.</div>}
 
           <div className="flex flex-wrap gap-3">
             {moduleKeys.map((k) => (
@@ -235,9 +241,7 @@ function GeneralSettingsInner() {
                 key={k}
                 label={k}
                 checked={!!form.availableModules[k]}
-                onChange={(on) =>
-                  setForm(f => ({ ...f, availableModules: { ...f.availableModules, [k]: on } }))
-                }
+                onChange={(on) => setForm((f) => ({ ...f, availableModules: { ...f.availableModules, [k]: on } }))}
               />
             ))}
           </div>
@@ -270,7 +274,9 @@ function GeneralSettingsInner() {
             <thead>
               <tr>
                 <th>Site</th>
-                {moduleKeys.map((k) => <th key={`head-${k}`}>{k}</th>)}
+                {moduleKeys.map((k) => (
+                  <th key={`head-${k}`}>{k}</th>
+                ))}
                 <th>Dernière maj</th>
               </tr>
             </thead>
@@ -288,7 +294,7 @@ function GeneralSettingsInner() {
                       />
                     </td>
                   ))}
-                  <td>{/* s.updatedAt si exposé côté API */}—</td>
+                  <td>—</td>
                 </tr>
               ))}
               {(!form.sites || form.sites.length === 0) && (

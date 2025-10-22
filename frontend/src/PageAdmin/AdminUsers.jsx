@@ -117,7 +117,7 @@ function CreateUserModal({ open, onClose, me, stats, afterCreate }) {
     if (!open || !sid || selRole === 'OWNER' || selRole === 'ADMIN') return;
     (async () => {
       try {
-        const { data } = await api.get(`/admin/sites/${sid}/teams`);
+        const { data } = await api.get(`/sites/${sid}/teams`);
         setTeams(data || []);
       } catch {
         setTeams([]);
@@ -191,7 +191,7 @@ function CreateUserModal({ open, onClose, me, stats, afterCreate }) {
     try {
       const sid = form.siteId;
       if (!sid) return;
-      const { data } = await api.get(`/admin/sites/${sid}/teams`);
+      const { data } = await api.get(`/sites/${sid}/teams`);
       setTeams(data || []);
       const t = (data || []).find(x => x.name === createdName);
       if (t) setForm(f => ({ ...f, teamId: t.id }));
@@ -361,7 +361,7 @@ function EditUserModal({ open, onClose, userId, me, afterSave }) {
           teamId: user?.teamId || '',
         });
         if (user?.primarySiteId) {
-          const tRes = await api.get(`/admin/sites/${user.primarySiteId}/teams`);
+          const tRes = await api.get(`/sites/${user.primarySiteId}/teams`);
           setTeams(tRes.data || []);
         } else {
           setTeams([]);
@@ -379,7 +379,7 @@ function EditUserModal({ open, onClose, userId, me, afterSave }) {
     if (!open || !form.primarySiteId) return;
     (async () => {
       try {
-        const { data } = await api.get(`/admin/sites/${form.primarySiteId}/teams`);
+        const { data } = await api.get(`/sites/${form.primarySiteId}/teams`);
         setTeams(data || []);
       } catch {
         setTeams([]);
